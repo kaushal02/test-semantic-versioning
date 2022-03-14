@@ -1,0 +1,286 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  AWS CloudFormation Template to launch Traceable EC2 instance and Configure Traffic mirroring
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  SubnetIds:
+    Description: >-
+      Select existing subnets for Traceable EC2 instance. If you are choosing private subnet, then make sure private subnet is configured to access public internet. If multiple subnets are selected, then stack will create a network load balancer backed by instances in availability zones of subnet. Select subnets in multiple zones to get the high availability
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    ConstraintDescription: must be existing subnet
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: m4.xlarge
+    AllowedValues:
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  TraceableRefreshToken:
+    Description: Refresh Token to connect to traceable.ai platform
+    NoEcho: 'true'
+    Type: String
+    MinLength: '0'
+    MaxLength: '100'
+    Default: ''
+  TraceableRefreshTokenSecretArn:
+    Description: >-
+      ARN of secret where refresh token is stored. Key for secret must be refresh_token.
+    Type: String
+    MinLength: '0'
+    MaxLength: '2048'
+    Default: ''
+  TraceableEnvironment:
+    Description: Environment name for Traceable
+    Type: String
+    MinLength: '3'
+    MaxLength: '100'
+    Default: traffic-mirroring
+  TraceableServiceName:
+    Description: Traceable service name for mirrored traffic
+    Type: String
+    MinLength: '3'
+    MaxLength: '100'
+    Default: traffic-mirroring-service
+  MirrorSourceType:
+    Description: Select mirror source type
+    Type: String
+    Default: LOAD_BALANCER
+    AllowedValues:
+      - LOAD_BALANCER
+      - TARGET_GROUP
+      - ECS_CLUSTER
+      - MANUAL
+  MirrorSource:
+    Description: Comma separated list of miror sources of selected types. For ECS_CLUSTER, provide name of one ECS cluster. For MANUAL, leave this feild empty.
+    Type: CommaDelimitedList
+    Default: ''
+  TraceableAPIEndpoint:
+    Description: Select Traceable api endpoint
+    Type: String
+    Default: api-dev.traceable.ai
+    AllowedValues:
+      - api-dev.traceable.ai
+      - api-staging.traceable.ai
+      - api.traceable.ai
+  ArtifactoryUsername:
+    Description: Username for internal artifactory
+    Type: String
+    MinLength: '3'
+    MaxLength: '100'
+  ArtifactoryAPIKey:
+    Description: API Key for internal artifactory
+    NoEcho: 'true'
+    Type: String
+    MinLength: '3'
+    MaxLength: '100'
+Conditions:
+  IsMultipleSubnets: !Not
+    - !Equals
+      - !Select
+        - 1
+        - !Split
+          - ','
+          - !Sub
+            - '${SubnetsIds},,,'
+            - SubnetsIds: !Join
+                - ','
+                - !Ref SubnetIds
+      - ''
+  IsSingleSubnet: !Not
+    - !Condition IsMultipleSubnets
+  IsMirroringSourceELB: !Equals
+    - !Ref MirrorSourceType
+    - 'LOAD_BALANCER'
+  IsMirroringSourceTG: !Equals
+    - !Ref MirrorSourceType
+    - 'TARGET_GROUP'
+  IsMirroringSourceECS: !Equals
+    - !Ref MirrorSourceType
+    - 'ECS_CLUSTER'
+Resources:
+  GetVPCDetailsStack:
+    Type: 'AWS::CloudFormation::Stack'
+    DeletionPolicy: Delete
+    Properties:
+      TemplateURL: "https://s3.amazonaws.com/downloads-staging/install/traffic-mirroring/cf-template/1.16.0-rc.4/get-vpc-details.yaml"
+      Parameters:
+        InstanceType: !Ref InstanceType
+        SubnetIds: !Join
+          - ','
+          - !Ref SubnetIds
+        MirrorSourceType: !Ref MirrorSourceType
+        MirrorSource: !Join
+          - ','
+          - !Ref MirrorSource
+        ParentStackName: !Ref 'AWS::StackName'
+        TraceableVersion: 1.16.0-rc.4
+  MirroringStack:
+    Type: 'AWS::CloudFormation::Stack'
+    DeletionPolicy: Delete
+    Properties:
+      TemplateURL: "https://s3.amazonaws.com/downloads-staging/install/traffic-mirroring/cf-template/1.16.0-rc.4/create-mirroring-sessions.yaml"
+      Parameters:
+        SourceLBs: !If
+          - IsMirroringSourceELB
+          - !Join
+            - ','
+            - !Ref MirrorSource
+          - !Ref AWS::NoValue
+        SourceTargetGroups: !If
+          - IsMirroringSourceTG
+          - !Join
+            - ','
+            - !Ref MirrorSource
+          - !Ref AWS::NoValue
+        SourceECSCluster: !If
+          - IsMirroringSourceECS
+          - !Select
+            - 0
+            - !Split
+              - ','
+              - !Join
+                - ','
+                - !Ref MirrorSource
+          - !Ref AWS::NoValue
+        TargetENI: !If
+          - IsSingleSubnet
+          - !GetAtt
+            - TraceableStackSingleInstance
+            - Outputs.targetENI
+          - !Ref AWS::NoValue
+        TargetLB: !If
+          - IsMultipleSubnets
+          - !GetAtt
+            - TraceableStackMultiZone
+            - Outputs.nlbARn
+          - !Ref AWS::NoValue
+        MirroringSessionNumber: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.mirrorSessionId
+        ParentStackName: !Ref 'AWS::StackName'
+  TraceableStackSingleInstance:
+    Type: 'AWS::CloudFormation::Stack'
+    DeletionPolicy: Delete
+    Condition: IsSingleSubnet
+    Properties:
+      TemplateURL: "https://s3.amazonaws.com/downloads-staging/install/traffic-mirroring/cf-template/1.16.0-rc.4/base-template.yaml"
+      Parameters:
+        KeyName: !Ref KeyName
+        SubnetId: !Select
+          - 0
+          - !Split
+            - ','
+            - !Join
+              - ','
+              - !Ref SubnetIds
+        VpcId: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.VpcId
+        InstanceType: !Ref InstanceType
+        TraceableRefreshToken: !Ref TraceableRefreshToken
+        TraceableRefreshTokenSecretArn: !Ref TraceableRefreshTokenSecretArn
+        TraceableEnvironment: !Ref TraceableEnvironment
+        TraceableServiceName: !Ref TraceableServiceName
+        TraceableAPIEndpoint: !Ref TraceableAPIEndpoint
+        ArtifactoryURL: !Join
+          - ''
+          - - 'https://'
+            - !Ref ArtifactoryUsername
+            - ':'
+            - !Ref ArtifactoryAPIKey
+            - '@traceableai.jfrog.io/artifactory/rpm-internal/centos7'
+        TraceableVersion: 1.16.0-rc.4
+        SuricataVersion: 7.0.13
+        ParentStackName: !Ref 'AWS::StackName'
+        VpcCIDR: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.vpcCidr
+        PublicIPForEC2: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.publicIP
+  TraceableStackMultiZone:
+    Type: 'AWS::CloudFormation::Stack'
+    DeletionPolicy: Delete
+    Condition: IsMultipleSubnets
+    Properties:
+      TemplateURL: "https://s3.amazonaws.com/downloads-staging/install/traffic-mirroring/cf-template/1.16.0-rc.4/base-template-multi-az.yaml"
+      Parameters:
+        KeyName: !Ref KeyName
+        SubnetIds: !Join
+          - ','
+          - !Ref SubnetIds
+        VpcId: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.VpcId
+        InstanceType: !Ref InstanceType
+        TraceableRefreshToken: !Ref TraceableRefreshToken
+        TraceableRefreshTokenSecretArn: !Ref TraceableRefreshTokenSecretArn
+        TraceableEnvironment: !Ref TraceableEnvironment
+        TraceableServiceName: !Ref TraceableServiceName
+        TraceableAPIEndpoint: !Ref TraceableAPIEndpoint
+        ArtifactoryURL: !Join
+          - ''
+          - - 'https://'
+            - !Ref ArtifactoryUsername
+            - ':'
+            - !Ref ArtifactoryAPIKey
+            - '@traceableai.jfrog.io/artifactory/rpm-internal/centos7'
+        TraceableVersion: 1.16.0-rc.4
+        SuricataVersion: 7.0.13
+        ParentStackName: !Ref 'AWS::StackName'
+        VpcCIDR: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.vpcCidr
+        PublicIPForEC2: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.publicIP
+        AZs: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.AZs
+        MaxSize: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.azCount
+        LBSubnetIds: !GetAtt
+          - GetVPCDetailsStack
+          - Outputs.LBSubnets
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: Traffic Mirroring Source
+        Parameters:
+          - MirrorSourceType
+          - MirrorSource
+      - Label:
+          default: Amazon EC2 Configuration (Traffic Mirroring Target)
+        Parameters:
+          - InstanceType
+          - KeyName
+          - SubnetIds
+      - Label:
+          default: Traceable Configuration
+        Parameters:
+          - TraceableRefreshToken
+          - TraceableRefreshTokenSecretArn
+          - TraceableEnvironment
+          - TraceableServiceName
+      - Label:
+          default: Internal Configuration for Testing
+        Parameters:
+          - TraceableAPIEndpoint
+          - ArtifactoryUsername
+          - ArtifactoryAPIKey
