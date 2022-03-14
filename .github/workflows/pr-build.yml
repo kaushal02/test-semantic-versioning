@@ -1,0 +1,71 @@
+name: build
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Install yq
+        run: |
+          sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys CC86BB64
+          sudo add-apt-repository ppa:rmescandon/yq
+          sudo apt update
+          sudo apt install yq -y
+
+      - name: set env vars
+        run: |
+          echo "SERVICE_VERSION=1.16.0" >> $GITHUB_ENV
+          echo "SURICATA_VERSION=7.0.13" >> $GITHUB_ENV
+
+      - name: transform config file
+        run: |
+          mkdir -p build
+            cp *.yaml build/
+            yq -i 'with(.Parameters.TraceableAPIEndpoint;
+                .Description = "Select Traceable api endpoint" |
+                .Type = "String" |
+                .Default = "api-dev.traceable.ai" |
+                .AllowedValues = ["api-dev.traceable.ai", "api-staging.traceable.ai", "api.traceable.ai"])' build/template.yaml
+            yq -i 'with(.Parameters.ArtifactoryUsername;
+                .Description = "Username for internal artifactory" |
+                .Type = "String" |
+                .MinLength = 3 |
+                .MaxLength = 100 |
+                .MinLength style = "single" | .MaxLength style = "single")' build/template.yaml
+            yq -i 'with(.Parameters.ArtifactoryAPIKey;
+                .Description = "API Key for internal artifactory" |
+                .NoEcho = "true" |
+                .Type = "String" |
+                .MinLength = 3 |
+                .MaxLength = 100 |
+                .NoEcho style = "single" | .MinLength style = "single" | .MaxLength style = "single")' build/template.yaml
+            yq -i 'with(.Resources.TraceableStackSingleInstance.Properties.Parameters;
+                .TraceableAPIEndpoint = "<TRACEABLE_ENDPOINT>" |
+                .ArtifactoryURL = ["", ["https://", "<ARTIFACTORY_USER>", ":", "<ARTIFACTORY_APIKEY>", "@traceableai.jfrog.io/artifactory/rpm-internal/centos7"]] |
+                .ArtifactoryURL.[] style = "single" | .ArtifactoryURL.[].[] style = "single")' build/template.yaml
+            yq -i 'with(.Resources.TraceableStackMultiZone.Properties.Parameters;
+                .TraceableAPIEndpoint = "<TRACEABLE_ENDPOINT>" |
+                .ArtifactoryURL = ["", ["https://", "<ARTIFACTORY_USER>", ":", "<ARTIFACTORY_APIKEY>", "@traceableai.jfrog.io/artifactory/rpm-internal/centos7"]] |
+                .ArtifactoryURL.[] style = "single" | .ArtifactoryURL.[].[] style = "single")' build/template.yaml
+            yq -i '.Metadata.["AWS::CloudFormation::Interface"].ParameterGroups += {
+                "Label": {"default": "Internal Configuration for Testing"},
+                "Parameters": ["TraceableAPIEndpoint", "ArtifactoryUsername", "ArtifactoryAPIKey"]}' build/template.yaml
+            sed -i "/ArtifactoryURL\:/ s/$/ \!Join/;
+                s/<TRACEABLE_ENDPOINT>/\!Ref TraceableAPIEndpoint/g;
+                s/\'<ARTIFACTORY_USER>\'/\!Ref ArtifactoryUsername/g;
+                s/\'<ARTIFACTORY_APIKEY>\'/\!Ref ArtifactoryAPIKey/g" build/template.yaml
+#                s|<SERVICE_VERSION>|${{ env.SERVICE_VERSION }}|g ;
+#                s|<SURICATA_VERSION>|${{ env.SURICATA_VERSION }}|g ;
+#                s|<URL_LOCATION_PREFIX>|https://s3.amazonaws.com/downloads-staging/install/traffic-mirroring/cf-template/${{ env.SERVICE_VERSION }}|g' build/test-template.yaml
+        working-directory: deployments
+
+      - name: print config file
+        run: |
+          cat deployments/build/template.yaml
