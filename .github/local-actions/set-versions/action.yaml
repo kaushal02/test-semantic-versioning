@@ -1,0 +1,37 @@
+name: set versions
+description: Set versions
+inputs:
+  version_lookup_file:
+    description: 'Refers to values.yaml file'
+    required: false
+    default: deployments/versions/values.yaml
+  tls_packet_capture_version_lookup_file:
+    description: 'Refers to tls packet capture version file'
+    required: false
+    default: deployments/versions/tls-packet-capture-version.txt
+
+runs:
+  using: "composite"
+  steps:
+    - name: Get suricata version
+      id: get_suricata_version
+      uses: mikefarah/yq@master
+      with:
+        cmd: yq '.suricataVersion' ${{ inputs.version_lookup_file }}
+    - name: Set suricata version in the env
+      shell: bash
+      run: echo "SURICATA_VERSION=${{ steps.get_suricata_version.outputs.result }}" >> $GITHUB_ENV
+
+    - name: Get ebpf tracer version
+      id: get_ebpf_tracer_version
+      uses: mikefarah/yq@master
+      with:
+        cmd: yq '.ebpfTracerVersion' ${{ inputs.version_lookup_file }}
+    - name: Set ebpf tracer version in the env
+      shell: bash
+      run: echo "EBPF_TRACER_VERSION=${{ steps.get_ebpf_tracer_version.outputs.result }}" >> $GITHUB_ENV
+
+    - name: Set tls packet capture version in the env
+      shell: bash
+      run: echo "TLS_PACKET_CAPTURE_VERSION=$(cat ${{ inputs.tls_packet_capture_version_lookup_file }})" >> $GITHUB_ENV
+
