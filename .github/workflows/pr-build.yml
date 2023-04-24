@@ -17,14 +17,8 @@ jobs:
           echo "SERVICE_VERSION=1.16.0" >> $GITHUB_ENV
           echo "SURICATA_VERSION=7.0.13" >> $GITHUB_ENV
 
-      - name: Set service version
-        run: echo "SERVICE_VERSION=$(git describe --abbrev=0 --tags)" >> $GITHUB_ENV
-
       - name: Set other versions
         uses: ./.github/local-actions/set-versions
 
       - name: Check versions
-        run: |
-          $GITHUB_ENV
-          echo ""
-          echo $GITHUB_ENV
+        run: echo $GITHUB_ENV
