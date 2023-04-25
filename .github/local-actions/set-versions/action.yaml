@@ -1,0 +1,47 @@
+name: set versions
+description: Set versions
+inputs:
+  arch_alias:
+    description: 'Architecture on which this action is running'
+    required: false
+    default: 'amd64'
+  version_lookup_file:
+    description: 'Refers to values.yaml file'
+    required: false
+    default: deployments/versions/values.yaml
+  tls_packet_capture_version_lookup_file:
+    description: 'Refers to tls packet capture version file'
+    required: false
+    default: deployments/versions/tls-packet-capture-version.txt
+
+runs:
+  using: "composite"
+  steps:
+    - name: check dir
+      shell: bash
+      run: |
+        pwd
+        ls -l
+
+    - name: Install yq
+      shell: bash
+      run: |
+        wget -q "https://github.com/mikefarah/yq/releases/download/v4.21.1/yq_linux_${{ inputs.arch_alias }}" -O yq
+        chmod +x yq
+        pwd
+        ls -l
+
+    - name: Set suricata version in the env
+      shell: bash
+      run: |
+        pwd
+        ls -l
+        echo "SURICATA_VERSION=$(yq '.suricataVersion' ${{ inputs.version_lookup_file }})" >> $GITHUB_ENV
+
+    - name: Set ebpf tracer version in the env
+      shell: bash
+      run: echo "EBPF_TRACER_VERSION=$(yq '.ebpfTracerVersion' ${{ inputs.version_lookup_file }})" >> $GITHUB_ENV
+
+    - name: Set tls packet capture version in the env
+      shell: bash
+      run: echo "TLS_PACKET_CAPTURE_VERSION=$(cat ${{ inputs.tls_packet_capture_version_lookup_file }})" >> $GITHUB_ENV
